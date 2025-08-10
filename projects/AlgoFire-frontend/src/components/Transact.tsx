@@ -16,6 +16,10 @@ const Transact = ({ openModal, setModalState }: TransactInterface) => {
   const [resolving, setResolving] = useState<boolean>(false)
   const [resolvedAddress, setResolvedAddress] = useState<string | null>(null)
   const [resolveError, setResolveError] = useState<string | null>(null)
+  const [balanceAlgos, setBalanceAlgos] = useState<number | null>(null)
+  const [maxSendAlgos, setMaxSendAlgos] = useState<number | null>(null)
+  const [amountAlgos, setAmountAlgos] = useState<number>(1)
+  const [balanceLoading, setBalanceLoading] = useState<boolean>(false)
 
   const algodConfig = getAlgodConfigFromViteEnvironment()
   const algorand = AlgorandClient.fromConfig({ algodConfig })
@@ -31,6 +35,46 @@ const Transact = ({ openModal, setModalState }: TransactInterface) => {
   const storedNetwork = ((typeof window !== 'undefined' && window.localStorage.getItem('af-network')) || '').toLowerCase()
   const explorerBase =
     storedNetwork === 'mainnet' ? 'https://explorer.perawallet.app/address' : 'https://testnet.explorer.perawallet.app/address'
+
+  // Fetch wallet balance and compute 99% cap when modal opens or address/network changes
+  useEffect(() => {
+    const fetchBalance = async () => {
+      if (!openModal || !activeAddress) return
+      setBalanceLoading(true)
+      try {
+        const net = storedNetwork === 'mainnet' ? 'mainnet' : 'testnet'
+        const algodBase = net === 'mainnet' ? 'https://mainnet-api.algonode.cloud' : 'https://testnet-api.algonode.cloud'
+        const resp = await fetch(`${algodBase.replace(/\/+$/, '')}/v2/accounts/${activeAddress}`)
+        if (resp.ok) {
+          const data = await resp.json()
+          const micro =
+            typeof data?.account?.amount === 'number' ? data.account.amount : typeof data?.amount === 'number' ? data.amount : undefined
+          if (typeof micro === 'number') {
+            const bal = micro / 1e6
+            setBalanceAlgos(parseFloat(bal.toFixed(6)))
+            const maxCap = Math.max(0, Math.floor(bal * 0.99 * 1e6) / 1e6)
+            setMaxSendAlgos(parseFloat(maxCap.toFixed(6)))
+            setAmountAlgos((prev) => {
+              const init = isFinite(prev) && prev > 0 ? prev : 1
+              return maxCap > 0 ? Math.min(init, maxCap) : 0
+            })
+          } else {
+            setBalanceAlgos(null)
+            setMaxSendAlgos(null)
+          }
+        } else {
+          setBalanceAlgos(null)
+          setMaxSendAlgos(null)
+        }
+      } catch {
+        setBalanceAlgos(null)
+        setMaxSendAlgos(null)
+      }
+      setBalanceLoading(false)
+    }
+    fetchBalance()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openModal, activeAddress, storedNetwork])
 
   const handleSubmitAlgo = async () => {
     setLoading(true)
@@ -48,13 +92,44 @@ const Transact = ({ openModal, setModalState }: TransactInterface) => {
         setLoading(false)
         return
       }
+      const chosenAmount = (() => {
+        const amt = Number(amountAlgos)
+        const max = typeof maxSendAlgos === 'number' ? maxSendAlgos : undefined
+        if (!isFinite(amt) || amt <= 0) return 0
+        if (typeof max === 'number') return Math.min(amt, max)
+        return amt
+      })()
+
+      if (chosenAmount <= 0) {
+        enqueueSnackbar('Please provide a valid amount', { variant: 'warning' })
+        setLoading(false)
+        return
+      }
+
       const result = await algorand.send.payment({
         signer: transactionSigner,
         sender: activeAddress,
         receiver: finalReceiver,
-        amount: algo(1),
+        amount: algo(chosenAmount),
       })
-      enqueueSnackbar(`Transaction sent: ${result.txIds[0]}`, { variant: 'success' })
+      const txId = result.txIds[0]
+      const txExplorerBase =
+        storedNetwork === 'mainnet' ? 'https://explorer.perawallet.app/tx' : 'https://testnet.explorer.perawallet.app/tx'
+      enqueueSnackbar(
+        <span>
+          Transaction sent:{' '}
+          <a
+            href={`${txExplorerBase}/${txId}`}
+            target="_blank"
+            rel="noreferrer"
+            className="underline break-all text-teal-700 hover:opacity-80"
+            title="Open transaction in block explorer"
+          >
+            {txId}
+          </a>
+        </span>,
+        { variant: 'success' },
+      )
       setReceiverAddress('')
       setResolvedAddress(null)
     } catch (e) {
@@ -208,17 +283,64 @@ const Transact = ({ openModal, setModalState }: TransactInterface) => {
             {!resolving && !resolvedAddress && resolveError && <span className="text-red-600">{resolveError}</span>}
           </div>
         )}
-        <div className="modal-action ">
-          <button className="btn" onClick={() => setModalState(!openModal)}>
-            Close
-          </button>
-          <button
-            data-test-id="send-algo"
-            className={`btn ${resolvedAddress || receiverAddress.length === 58 ? '' : 'btn-disabled'} lo`}
-            onClick={handleSubmitAlgo}
-          >
-            {loading ? <span className="loading loading-spinner" /> : 'Send 1 Algo'}
-          </button>
+        <div className="modal-action flex items-center justify-between">
+          {/* Bottom-left: Amount selector with 99% cap */}
+          <div className="flex items-center gap-2">
+            <label className="text-sm text-gray-700">Amount</label>
+            <input
+              type="number"
+              inputMode="decimal"
+              step={0.001}
+              min={0}
+              max={typeof maxSendAlgos === 'number' ? maxSendAlgos : undefined}
+              value={Number.isFinite(amountAlgos) ? amountAlgos : ''}
+              onChange={(e) => {
+                const val = parseFloat(e.target.value)
+                if (!isFinite(val)) {
+                  setAmountAlgos(0)
+                  return
+                }
+                const max = typeof maxSendAlgos === 'number' ? maxSendAlgos : undefined
+                const clamped = typeof max === 'number' ? Math.min(val, max) : val
+                setAmountAlgos(clamped < 0 ? 0 : parseFloat(clamped.toFixed(6)))
+              }}
+              className="input input-bordered w-32"
+              placeholder="0.000"
+              title={balanceAlgos !== null ? `Balance: ${balanceAlgos} ALGO. Max (99%): ${maxSendAlgos ?? 0} ALGO` : 'Enter amount'}
+            />
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => {
+                if (typeof maxSendAlgos === 'number') setAmountAlgos(maxSendAlgos)
+              }}
+              disabled={!(typeof maxSendAlgos === 'number' && maxSendAlgos > 0)}
+              title="Set to 99% of balance"
+            >
+              Max
+            </button>
+            {balanceLoading ? <span className="loading loading-spinner loading-xs" /> : null}
+          </div>
+
+          {/* Bottom-right: Actions */}
+          <div className="flex items-center gap-2">
+            <button
+              data-test-id="send-algo"
+              className={`btn ${resolvedAddress || receiverAddress.length === 58 ? '' : 'btn-disabled'} lo`}
+              onClick={handleSubmitAlgo}
+              disabled={
+                !(
+                  (resolvedAddress || receiverAddress.length === 58) &&
+                  typeof amountAlgos === 'number' &&
+                  amountAlgos > 0 &&
+                  (typeof maxSendAlgos !== 'number' || amountAlgos <= maxSendAlgos)
+                ) || loading
+              }
+              title={typeof maxSendAlgos === 'number' ? `Max sendable (99%): ${maxSendAlgos} ALGO` : undefined}
+            >
+              {loading ? <span className="loading loading-spinner" /> : `Send ${amountAlgos || 0} ALGO`}
+            </button>
+          </div>
         </div>
       </form>
     </dialog>
