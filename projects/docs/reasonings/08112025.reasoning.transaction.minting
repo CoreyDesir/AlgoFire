@@ -1,0 +1,39 @@
+Reasoning Log - NFT Minting
+Date: 2025-08-12T02:03:20Z
+
+Scope
+- Implement ARC-3 NFT minting on Testnet/Mainnet via connected wallet.
+- Upload image + metadata.json to IPFS (Filebase).
+- Wire UI: Mint modal and claim flow.
+
+Key Changes
+- Added src/utils/mintArc3.ts: creates 1-of-1 ASA with ARC-3 fields using AlgorandClient.send.assetCreate (sender+signer).
+- Added src/utils/ipfs.ts: switched to Filebase RPC API (https://rpc.filebase.io/api/v0/add?pin=true) with Authorization: Bearer VITE_FILEBASE_API_KEY.
+- Added src/components/MintNft.tsx: generic ARC-3 mint UI.
+- Added src/components/ClaimMasterPass.tsx: previews /blockchain.png, uploads to IPFS, mints, shows tx + CIDs.
+- Updated src/Home.tsx: buttons/modals wiring; shows claimed state and last image CID.
+- Removed web3.storage dependency; reinstalled deps.
+
+Errors Encountered + Resolutions
+1) npm error notarget for web3.storage@4.6.0
+   - Cause: version does not exist.
+   - Fix: pinned 4.5.5, then replaced with Filebase RPC.
+2) NetworkError when attempting to fetch resource (IPFS upload)
+   - Cause: non-RPC endpoint/CORS.
+   - Fix: use Filebase RPC endpoint with Bearer API key.
+3) Filebase upload failed (403)
+   - Cause: invalid/missing RPC API key (S3 keys do not work).
+   - Fix: VITE_FILEBASE_API_KEY from Filebase Platform APIs → RPC API Keys.
+4) Mint failed: Address must not be null or undefined
+   - Cause: signer payload lacked sender.
+   - Fix: use algorand.send.assetCreate({ sender, signer, ... }).
+
+Environment Variables
+- VITE_ALGOD_SERVER, VITE_ALGOD_PORT, VITE_ALGOD_TOKEN, VITE_ALGOD_NETWORK (testnet/mainnet).
+- VITE_INDEXER_SERVER, VITE_INDEXER_PORT, VITE_INDEXER_TOKEN.
+- VITE_FILEBASE_API_KEY (RPC API key).
+
+Usage
+- Connect wallet.
+- “Mint NFT” for custom input, or “Get Your MasterPass” to mint blockchain.png (preview shown).
+- On success, UI shows tx link and CIDs; claim banner shows image CID.
